@@ -9,6 +9,8 @@ import java.io.StringReader;
 import java.io.StringWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
 
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
@@ -23,7 +25,9 @@ import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
 import org.apache.http.StatusLine;
 import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.NTCredentials;
 import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.auth.params.AuthPNames;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
@@ -32,6 +36,7 @@ import org.apache.http.client.methods.HttpOptions;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.http.client.params.AuthPolicy;
 import org.apache.http.conn.params.ConnRoutePNames;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.DefaultHttpClient;
@@ -65,6 +70,11 @@ public class ODataCxfClient extends AbstractODataClient {
 
   private final OClientBehavior[] requiredBehaviors = new OClientBehavior[] { OClientBehaviors.methodTunneling("MERGE") };
   private final OClientBehavior[] behaviors;
+  private String ntlmUser = null;
+  private String ntlmPass = null;
+  private String ntlmDomain = null;
+  private String ntlmHost = null;
+  private Boolean ntlmAuthKey = Boolean.FALSE;
 
   private final HttpClient httpClient;
 
@@ -81,6 +91,7 @@ public class ODataCxfClient extends AbstractODataClient {
             final String hostPort = System.getProperties().getProperty("http.proxyPort");
             final String hostUser = System.getProperties().getProperty("http.proxyUser");
             final String hostPassword = System.getProperties().getProperty("http.proxyPassword");
+            this.ntlmHost = hostName + ":" + hostPort;
             final HttpHost proxy = new HttpHost(hostName, Integer.parseInt(hostPort));
             if (!((hostUser == null) || hostUser.isEmpty())) {
 
@@ -91,6 +102,13 @@ public class ODataCxfClient extends AbstractODataClient {
             }
             this.httpClient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, proxy);
 
+        }
+        
+        if(System.getProperties().containsKey("http.ntlm.auth")){
+            this.ntlmAuthKey = Boolean.TRUE;
+            this.ntlmUser = System.getProperties().getProperty("ntlm.user");
+            this.ntlmPass = System.getProperties().getProperty("ntlm.pass");
+            this.ntlmDomain = System.getProperties().getProperty("ntlm.domain");
         }
     }
 
@@ -119,7 +137,7 @@ public class ODataCxfClient extends AbstractODataClient {
     URI uri = uriBuilder.build();
 
     if (this.behaviors != null) {
-      for (OClientBehavior behavior : behaviors)
+      for (OClientBehavior behavior : this.behaviors)
         request = behavior.transform(request);
     }
 
@@ -140,6 +158,14 @@ public class ODataCxfClient extends AbstractODataClient {
 
     if (!request.getHeaders().containsKey(ODataConstants.Headers.USER_AGENT))
       httpRequest.addHeader(ODataConstants.Headers.USER_AGENT, "odata4j.org");
+    
+    if(this.ntlmAuthKey.equals(Boolean.TRUE)){
+        List<String> authpref = new ArrayList<String>();
+        authpref.add(AuthPolicy.NTLM);
+        this.httpClient.getParams().setParameter(AuthPNames.TARGET_AUTH_PREF, authpref);
+        NTCredentials creds = new NTCredentials(this.ntlmUser, this.ntlmPass, this.ntlmHost, this.ntlmDomain);
+        ((DefaultHttpClient) this.httpClient).getCredentialsProvider().setCredentials(AuthScope.ANY, creds);
+    }
 
     if (request.getPayload() != null && httpRequest instanceof HttpEntityEnclosingRequest) {
       HttpEntityEnclosingRequest entityRequest = (HttpEntityEnclosingRequest) httpRequest;
