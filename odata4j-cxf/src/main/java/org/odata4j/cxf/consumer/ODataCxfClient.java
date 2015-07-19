@@ -9,6 +9,8 @@ import java.io.StringReader;
 import java.io.StringWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
 
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
@@ -17,13 +19,17 @@ import javax.ws.rs.core.Response.Status.Family;
 import javax.ws.rs.core.Response.StatusType;
 import javax.ws.rs.core.UriBuilder;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
 import org.apache.http.StatusLine;
 import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.NTCredentials;
 import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.auth.params.AuthPNames;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
@@ -32,6 +38,7 @@ import org.apache.http.client.methods.HttpOptions;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.http.client.params.AuthPolicy;
 import org.apache.http.conn.params.ConnRoutePNames;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.DefaultHttpClient;
@@ -62,9 +69,16 @@ import org.odata4j.stax2.util.StaxUtil;
  * OData client based on Apache's HTTP client implementation.
  */
 public class ODataCxfClient extends AbstractODataClient {
+    
+  private final Log log = LogFactory.getLog(ODataCxfClient.class);
 
   private final OClientBehavior[] requiredBehaviors = new OClientBehavior[] { OClientBehaviors.methodTunneling("MERGE") };
   private final OClientBehavior[] behaviors;
+  private String ntlmUser = null;
+  private String ntlmPass = null;
+  private String ntlmDomain = null;
+  private String ntlmHost = null;
+  private Boolean ntlmAuthKey = Boolean.FALSE;
 
   private final HttpClient httpClient;
 
@@ -76,11 +90,13 @@ public class ODataCxfClient extends AbstractODataClient {
 
         if (System.getProperties().containsKey("http.proxyHost")
                 && System.getProperties().containsKey("http.proxyPort")) {
+            this.log.info("Setting proxy params");
             // support proxy settings
             final String hostName = System.getProperties().getProperty("http.proxyHost");
             final String hostPort = System.getProperties().getProperty("http.proxyPort");
             final String hostUser = System.getProperties().getProperty("http.proxyUser");
             final String hostPassword = System.getProperties().getProperty("http.proxyPassword");
+            this.ntlmHost = hostName + ":" + hostPort;
             final HttpHost proxy = new HttpHost(hostName, Integer.parseInt(hostPort));
             if (!((hostUser == null) || hostUser.isEmpty())) {
 
@@ -90,7 +106,16 @@ public class ODataCxfClient extends AbstractODataClient {
 
             }
             this.httpClient.getParams().setParameter(ConnRoutePNames.DEFAULT_PROXY, proxy);
-
+            this.log.info("Proxy params: " + hostUser + ":" + hostPassword + "@" + hostName + ":" + hostPort);
+        }
+        
+        if(System.getProperties().containsKey("http.ntlm.auth")){
+            this.log.info("Setting NTLM params");
+            this.ntlmAuthKey = Boolean.TRUE;
+            this.ntlmUser = System.getProperties().getProperty("ntlm.user");
+            this.ntlmPass = System.getProperties().getProperty("ntlm.pass");
+            this.ntlmDomain = System.getProperties().getProperty("ntlm.domain");
+            this.log.info("NTLM params: " + this.ntlmUser + ":" + this.ntlmPass + "/" + this.ntlmDomain);
         }
     }
 
@@ -119,7 +144,7 @@ public class ODataCxfClient extends AbstractODataClient {
     URI uri = uriBuilder.build();
 
     if (this.behaviors != null) {
-      for (OClientBehavior behavior : behaviors)
+      for (OClientBehavior behavior : this.behaviors)
         request = behavior.transform(request);
     }
 
@@ -140,6 +165,16 @@ public class ODataCxfClient extends AbstractODataClient {
 
     if (!request.getHeaders().containsKey(ODataConstants.Headers.USER_AGENT))
       httpRequest.addHeader(ODataConstants.Headers.USER_AGENT, "odata4j.org");
+    
+    if(this.ntlmAuthKey.equals(Boolean.TRUE)){
+        this.log.info("Creating NTLM credentials");
+        List<String> authpref = new ArrayList<String>();
+        authpref.add(AuthPolicy.NTLM);
+        this.httpClient.getParams().setParameter(AuthPNames.TARGET_AUTH_PREF, authpref);
+        NTCredentials creds = new NTCredentials(this.ntlmUser, this.ntlmPass, this.ntlmHost, this.ntlmDomain);
+        ((DefaultHttpClient) this.httpClient).getCredentialsProvider().setCredentials(AuthScope.ANY, creds);
+        this.log.info("NTLM credentials created");
+    }
 
     if (request.getPayload() != null && httpRequest instanceof HttpEntityEnclosingRequest) {
       HttpEntityEnclosingRequest entityRequest = (HttpEntityEnclosingRequest) httpRequest;
@@ -177,7 +212,9 @@ public class ODataCxfClient extends AbstractODataClient {
     // execute request
     HttpResponse httpResponse = null;
     try {
+      this.log.info("Executing http request");
       httpResponse = this.httpClient.execute(httpRequest);
+      this.log.info("HTTP request executed");
     } catch (IOException e) {
       Throwables.propagate(e);
     }
@@ -200,9 +237,12 @@ public class ODataCxfClient extends AbstractODataClient {
         }
       };
     }
-    for (StatusType expStatus : expectedResponseStatus)
-      if (expStatus.getStatusCode() == status.getStatusCode())
+    for (StatusType expStatus : expectedResponseStatus){
+      if (expStatus.getStatusCode() == status.getStatusCode()){
+        this.log.info("Returning CxfClientResponse");
         return new CxfClientResponse(httpResponse);
+      }
+    }
 
     // the server responded with an unexpected status
     RuntimeException exception;
